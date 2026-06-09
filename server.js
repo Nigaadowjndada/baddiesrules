@@ -1,64 +1,70 @@
-import express from "express";
-
+const express = require('express');
 const app = express();
+
 app.use(express.json());
+app.use(express.text());
 
-const bots = {};
+// Store connected bots: { "BotUsername": { command: "stalk", lastSeen: timestamp } }
+const connectedBots = new Map();
 
-// register bot
-app.post("/register", (req, res) => {
-    const { botId } = req.body;
-
-    bots[botId] = {
-        lastSeen: Date.now(),
-        command: null
-    };
-
-    res.send({ ok: true });
-});
-
-// heartbeat
-app.post("/heartbeat/:id", (req, res) => {
-    const id = req.params.id;
-    if (bots[id]) bots[id].lastSeen = Date.now();
-    res.send({ ok: true });
-});
-
-// send command
-app.post("/command/:id", (req, res) => {
-    const id = req.params.id;
-    if (!bots[id]) return res.send({ error: "not found" });
-
-    bots[id].command = req.body;
-    res.send({ ok: true });
-});
-
-// get command (and clear it)
-app.get("/command/:id", (req, res) => {
-    const id = req.params.id;
-
-    const bot = bots[id];
-    if (!bot) return res.send({ action: "none" });
-
-    const cmd = bot.command;
-    bot.command = null;
-
-    res.send(cmd || { action: "none" });
-});
-
-// list bots
-app.get("/bots", (req, res) => {
+// Clean up old bots every 30 seconds (remove if they haven't pinged in 10 seconds)
+setInterval(() => {
     const now = Date.now();
-
-    for (const id in bots) {
-        if (now - bots[id].lastSeen > 30000) {
-            delete bots[id];
+    for (const [name, data] of connectedBots.entries()) {
+        if (now - data.lastSeen > 10000) { // 10 seconds timeout
+            connectedBots.delete(name);
+            console.log(`Bot ${name} disconnected (timeout)`);
         }
     }
+}, 30000);
 
-    res.send(Object.keys(bots));
+// Bot ping endpoint - bots call this every second
+app.get('/ping', (req, res) => {
+    const botName = req.query.name;
+    if (!botName) {
+        res.status(400).send('Missing name parameter');
+        return;
+    }
+    
+    // Get current command for this bot (default to 'stalk')
+    const botData = connectedBots.get(botName);
+    const currentCommand = botData ? botData.command : 'stalk';
+    
+    // Update or add bot with current timestamp
+    connectedBots.set(botName, {
+        command: currentCommand,
+        lastSeen: Date.now()
+    });
+    
+    console.log(`✅ ${botName} pinged - command: ${currentCommand}`);
+    res.send(currentCommand);
 });
 
-app.listen(process.env.PORT || 3000, () => {
-    console.log("running");
+// Controller sends command to ALL bots
+app.post('/command', (req, res) => {
+    const command = req.body;
+    console.log(`📢 Controller sent command: ${command} to ${connectedBots.size} bots`);
+    
+    // Update command for all connected bots
+    for (const [botName, data] of connectedBots.entries()) {
+        connectedBots.set(botName, {
+            command: command,
+            lastSeen: data.lastSeen
+        });
+    }
+    
+    res.send('OK');
+});
+
+// Get list of all currently connected bots
+app.get('/bots', (req, res) => {
+    const botList = Array.from(connectedBots.keys());
+    console.log(`📋 Bot list requested: ${botList.length} bots online`);
+    res.json(botList);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📍 Ready to manage bots!`);
 });
